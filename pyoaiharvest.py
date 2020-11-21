@@ -1,15 +1,14 @@
 import sys
-import urllib2
+import urllib3
 import zlib
 import time
 import re
 import xml.dom.pulldom
-import operator
-import codecs
 from optparse import OptionParser
 
 nDataBytes, nRawBytes, nRecoveries, maxRecoveries = 0, 0, 0, 3
 
+http = urllib3.PoolManager()
 
 def getFile(serverString, command, verbose=1, sleepTime=0):
     global nRecoveries, nDataBytes, nRawBytes
@@ -17,20 +16,20 @@ def getFile(serverString, command, verbose=1, sleepTime=0):
         time.sleep(sleepTime)
     remoteAddr = serverString + '?verb=%s' % command
     if verbose:
-        print "\r", "getFile ...'%s'" % remoteAddr[-90:]
+        print("\r", "getFile ...'%s'" % remoteAddr)
     headers = {'User-Agent': 'OAIHarvester/2.0', 'Accept': 'text/html',
                'Accept-Encoding': 'compress, deflate'}
     try:
-        #remoteData=urllib2.urlopen(urllib2.Request(remoteAddr, None, headers)).read()
-        remoteData = urllib2.urlopen(remoteAddr).read()
-    except urllib2.HTTPError, exValue:
+        r = http.request('GET', remoteAddr)
+        remoteData = r.data.decode('utf-8')
+    except urllib3.HTTPError as exValue:
         if exValue.code == 503:
             retryWait = int(exValue.hdrs.get("Retry-After", "-1"))
             if retryWait < 0:
                 return None
-            print 'Waiting %d seconds' % retryWait
+            print('Waiting %d seconds' % retryWait)
             return getFile(serverString, command, 0, retryWait)
-        print exValue
+        print(exValue)
         if nRecoveries < maxRecoveries:
             nRecoveries += 1
             return getFile(serverString, command, 1, 60)
@@ -43,7 +42,7 @@ def getFile(serverString, command, verbose=1, sleepTime=0):
     nDataBytes += len(remoteData)
     mo = re.search('<error *code=\"([^"]*)">(.*)</error>', remoteData)
     if mo:
-        print "OAIERROR: code=%s '%s'" % (mo.group(1), mo.group(2))
+        print("OAIERROR: code=%s '%s'" % (mo.group(1), mo.group(2)))
     else:
         return remoteData
 
@@ -79,14 +78,14 @@ if __name__ == "__main__":
         if options.setName:
             oaiSet = options.setName
     else:
-        print usage
+        print(usage)
 
     if not serverString.startswith('http'):
         serverString = 'http://' + serverString
 
-    print "Writing records to %s from archive %s" % (outFileName, serverString)
+    print("Writing records to %s from archive %s" % (outFileName, serverString))
 
-    ofile = codecs.lookup('utf-8')[-1](file(outFileName, 'wb'))
+    ofile = open(outFileName, 'w')
 
     ofile.write('<repository xmlns:oai_dc="http://www.openarchives.org/OAI/2.0/oai_dc/" \
      xmlns:dc="http://purl.org/dc/elements/1.1/" \
@@ -103,7 +102,8 @@ if __name__ == "__main__":
     else:
         verbOpts += '&metadataPrefix=%s' % 'oai_dc'
 
-    print "Using url:%s" % serverString + '?ListRecords' + verbOpts
+    print("First query without resumptionToken")
+    print("Using url:%s" % serverString + '?ListRecords' + verbOpts)
 
     data = getFile(serverString, 'ListRecords' + verbOpts)
 
@@ -116,6 +116,10 @@ if __name__ == "__main__":
                 events.expandNode(node)
                 node.writexml(ofile)
                 recordCount += 1
+
+        # An incomplete list response is indicated by the presence of a resumptionToken element in the response. 
+        # The next incomplete list request is made using the content of the resumptionToken element as the value of the exclusive resumptionToken argument. 
+        # The last incomplete list response is indicated by a resumptionToken element with no content. 
         mo = re.search('<resumptionToken[^>]*>(.*)</resumptionToken>', data)
         if not mo:
             break
@@ -123,6 +127,6 @@ if __name__ == "__main__":
 
     ofile.write('\n</repository>\n'), ofile.close()
 
-    print "\nRead %d bytes (%.2f compression)" % (nDataBytes, float(nDataBytes) / nRawBytes)
+    print("\nRead %d bytes (%.2f compression)" % (nDataBytes, float(nDataBytes) / nRawBytes))
 
-    print "Wrote out %d records" % recordCount
+    print("Wrote out %d records" % recordCount)
